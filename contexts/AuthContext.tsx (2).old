@@ -1,0 +1,175 @@
+import createContextHook from '@nkzw/create-context-hook';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { User } from '@/types';
+
+const DOMAIN = 'example.com';
+
+export const [AuthProvider, useAuth] = createContextHook(() => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    checkAuthState();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        handleUser(session.user);
+      } else {
+        setCurrentUser(null);
+        AsyncStorage.removeItem('currentUser');
+      }
+    });
+
+    return () => {
+      authListener?.unsubscribe();
+    };
+  }, []);
+
+  const checkAuthState = async () => {
+    try {
+      const savedUser = await AsyncStorage.getItem('currentUser');
+      if (savedUser) {
+        setCurrentUser(JSON.parse(savedUser));
+      } else {
+        const session = supabase.auth.session();
+        if (session?.user) {
+          await handleUser(session.user);
+        }
+      }
+    } catch (error) {
+      console.log('Erreur lors de la vérification de l\'authentification:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUser = async (supabaseUser: any) => {
+    const user: User = {
+      id: supabaseUser.id,
+      username: supabaseUser.email?.split('@')[0] || '',
+      email: supabaseUser.email || '',
+      fullName: '', // tu peux l’enrichir plus tard si tu as une table dédiée
+      role: 'user',
+      createdAt: new Date().toISOString(),
+      stats: {
+        listeningTime: 0,
+        favoritePrayers: 0,
+        lectioSessions: 0,
+        intentionsSubmitted: 0,
+        intentionsAnswered: 0,
+      },
+    };
+
+    await AsyncStorage.setItem('currentUser', JSON.stringify(user));
+    setCurrentUser(user);
+  };
+
+  const login = async (username: string, password: string): Promise<boolean> => {
+    try {
+      const email = `${username}@${DOMAIN}`;
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.log('Erreur lors de la connexion:', error.message);
+        return false;
+      }
+      if (data.user) {
+        await handleUser(data.user);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.log('Erreur lors de la connexion:', error);
+      return false;
+    }
+  };
+
+  const register = async (fullName: string, username: string, password: string): Promise<boolean> => {
+    try {
+      if (password.length < 6) {
+        throw new Error("Le mot de passe doit contenir au moins 6 caractères");
+      }
+
+      const email = `${username}@${DOMAIN}`;
+
+      // Vérifier si ce username/email existe déjà via une requête Supabase ou mock
+      // Tu peux faire une requête dans ta table users personnalisée ici
+      // Ici on suppose qu'on ne le fait pas et on laisse Supabase gérer
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.log('Erreur lors de l\'inscription:', error.message);
+        return false;
+      }
+
+      if (data.user) {
+        // Enregistrement local
+        const newUser: User = {
+          id: data.user.id,
+          username,
+          email,
+          fullName,
+          role: 'user',
+          createdAt: new Date().toISOString(),
+          stats: {
+            listeningTime: 0,
+            favoritePrayers: 0,
+            lectioSessions: 0,
+            intentionsSubmitted: 0,
+            intentionsAnswered: 0,
+          },
+        };
+
+        await AsyncStorage.setItem('currentUser', JSON.stringify(newUser));
+        setCurrentUser(newUser);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.log('Erreur lors de l\'inscription:', error);
+      return false;
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut();
+      await AsyncStorage.removeItem('currentUser');
+      setCurrentUser(null);
+    } catch (error) {
+      console.log('Erreur lors de la déconnexion:', error);
+    }
+  };
+
+  const updateUserStats = async (stats: Partial<User['stats']>) => {
+    if (currentUser) {
+      const updatedUser = {
+        ...currentUser,
+        stats: { ...currentUser.stats, ...stats },
+      };
+      await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      setCurrentUser(updatedUser);
+      // Optionnel : sync avec Supabase table user personnalisée ici
+    }
+  };
+
+  return {
+    currentUser,
+    isAuthenticated: !!currentUser,
+    isLoading,
+    login,
+    register,
+    logout,
+    updateUserStats,
+  };
+});
